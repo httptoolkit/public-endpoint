@@ -1,10 +1,11 @@
 import * as http2 from 'http2';
 import * as httpolyglot from '@httptoolkit/httpolyglot';
+import { makeDestroyable, DestroyableServer } from 'destroyable-server';
 
 async function startAdminServer(options: {
     adminPort: number;
 }) {
-    const adminServer = http2.createServer();
+    const adminServer = makeDestroyable(http2.createServer());
     adminServer.on('session', (session) => {
         session.on('stream', (stream, headers) => {
             console.log('Received admin request:', headers[':method'], headers[':path']);
@@ -16,12 +17,14 @@ async function startAdminServer(options: {
     await new Promise<void>((resolve) => {
         adminServer.listen({ port: options.adminPort }, resolve);
     });
+
+    return adminServer;
 }
 
 async function startPublicUrlServer(options: {
     publicPorts: number[];
 }) {
-    const server = httpolyglot.createServer({
+    const server = makeDestroyable(httpolyglot.createServer({
         socks: undefined,
         unknownProtocol: undefined,
         tls: undefined
@@ -29,7 +32,7 @@ async function startPublicUrlServer(options: {
         console.log(`Received public url request: ${req.method} ${req.url}`);
         res.writeHead(200, { 'Content-Type': 'text/plain' });
         res.end('Hello from Public URL Server!\n');
-    });
+    }));
 
     await Promise.all([
         options.publicPorts.map((port) => {
@@ -41,22 +44,26 @@ async function startPublicUrlServer(options: {
             });
         })
     ]);
+
+    return server;
 }
 
-export async function startServer(options: {
+export async function startServers(options: {
     adminPort: number;
     publicPorts: number[];
 }) {
-    await Promise.all([
+    const servers = await Promise.all([
         startAdminServer({ adminPort: options.adminPort }),
         startPublicUrlServer({ publicPorts: options.publicPorts })
     ]);
+
+    return servers as DestroyableServer[];
 }
 
 // This is not a perfect test (various odd cases) but good enough
 const wasRunDirectly = import.meta.filename === process?.argv[1];
 if (wasRunDirectly) {
-    startServer({
+    startServers({
         adminPort: parseInt(process.env.ADMIN_PORT ?? '4000', 10),
         publicPorts: (process.env.PUBLIC_PORTS ?? '8080').split(',').map(p => parseInt(p, 10))
     }).then(() => {
