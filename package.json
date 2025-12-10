@@ -1,0 +1,49 @@
+{
+  "name": "@httptoolkit/public-url-server",
+  "version": "0.0.0",
+  "description": "A server to exposing a public cloud URLs for local HTTP Toolkit webhook, OAuth & localhost-server testing",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "tsx src/server.ts",
+    "start:dev": "tsx --watch src/server.ts",
+    "build": "tsc",
+    "test": "mocha -r tsx test/**/*.spec.ts"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/httptoolkit/public-url-server.git"
+  },
+  "keywords": [
+    "http",
+    "network",
+    "public",
+    "tunnel",
+    "ngrok",
+    "tls",
+    "https",
+    "test",
+    "webhook",
+    "oauth",
+    "localhost"
+  ],
+  "author": "Tim Perry <tim@httptoolkit.com>",
+  "license": "AGPL-3.0-only",
+  "bugs": {
+    "url": "https://github.com/httptoolkit/public-url-server/issues"
+  },
+  "homepage": "https://github.com/httptoolkit/public-url-server#readme",
+  "dependencies": {
+    "@httptoolkit/httpolyglot": "^3.0.1",
+    "tsx": "^4.19.3"
+  },
+  "devDependencies": {
+    "@types/chai": "^5.2.3",
+    "@types/mocha": "^10.0.10",
+    "@types/node": "^24.10.2",
+    "chai": "^6.2.1",
+    "destroyable-server": "^1.0.1",
+    "mocha": "^11.7.5",
+    "typescript": "^5.9.3"
+  }
+}

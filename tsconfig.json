@@ -1,0 +1,17 @@
+{
+    "compilerOptions": {
+        "noEmit": true,
+        "target": "ES2022",
+        "module": "nodenext",
+        "moduleResolution": "nodenext",
+        "esModuleInterop": true,
+        "allowSyntheticDefaultImports": true,
+        "erasableSyntaxOnly": true,
+        "sourceMap": true,
+        "strict": true
+    },
+    "include": [
+        "custom-typings/*.d.ts",
+        "src/**/*.ts"
+    ]
+}
