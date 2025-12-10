@@ -41,12 +41,12 @@ jobs:
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           images: |
-            ghcr.io/httptoolkit/public-url-server
+            ghcr.io/httptoolkit/public-endpoint
           tags: |
               type=raw,value=latest,enable={{is_default_branch}}
               type=sha
 
-      - name: Build & publish image to registries
+      - name: Build & publish image to registry
         uses: docker/build-push-action@v4
         with:
           push: ${{ github.event_name != 'pull_request' }}

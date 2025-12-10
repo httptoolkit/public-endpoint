@@ -1,1 +1,1 @@
-# public-url-server
+# public-endpoint
