@@ -54,3 +54,26 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           build-args: GIT_HASH=${{ github.sha }}
+
+      - name: Configure Kubectl
+        run: |
+          kubectl config set-cluster scw-cluster \
+            --server="${{ vars.K8S_SERVER_ADDRESS }}" \
+            --certificate-authority=<(echo "${{ vars.K8S_CA_CERT }}" | base64 -d) \
+            --embed-certs=true
+
+          kubectl config set-credentials deployer --token="${{ secrets.K8S_DEPLOY_TOKEN }}"
+
+          kubectl config set-context default --cluster=scw-cluster --user=deployer
+          kubectl config use-context default
+
+      - name: Deploy to Kubernetes
+        run: |
+          sed "s|/public-endpoint:latest|/public-endpoint:sha-${GITHUB_SHA::7}|g" deploy/deployment.yaml | \
+            kubectl apply -f - \
+              -f deploy/service.yaml \
+              -f deploy/routes.yaml
+
+      - name: Verify Deployment
+        run: |
+          kubectl rollout status deployment/public-endpoint -n public-endpoint

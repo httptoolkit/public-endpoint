@@ -1,0 +1,26 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: public-endpoint
+  namespace: public-endpoint
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: public-endpoint
+  template:
+    metadata:
+      labels:
+        app: public-endpoint
+    spec:
+      containers:
+        - name: server
+          image: ghcr.io/httptoolkit/public-endpoint:latest # GHA replaces :latest on build
+          env:
+            - name: ADMIN_PORT
+              value: "4000"
+            - name: PUBLIC_PORTS
+              value: "4040"
+          ports:
+            - containerPort: 4000
+            - containerPort: 4040
