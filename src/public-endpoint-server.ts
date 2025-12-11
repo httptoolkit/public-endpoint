@@ -47,6 +47,7 @@ export class PublicEndpointServer {
         if (!hostname.endsWith(this.rootDomain)) {
             console.log(`Rejected request for invalid public endpoint: ${hostname}`);
             res.writeHead(404);
+            res.end();
             return;
         }
 
@@ -55,6 +56,7 @@ export class PublicEndpointServer {
         if (req.method === 'CONNECT') {
             console.log(`Rejected CONNECT request on public endpoint: ${hostHeader}`);
             res.writeHead(405);
+            res.end();
             return;
         }
 
@@ -62,6 +64,7 @@ export class PublicEndpointServer {
         if (!req.url!.startsWith('/')) {
             console.log(`Rejected request with non-relative URL: ${req.url}`);
             res.writeHead(400);
+            res.end();
             return;
         }
 
@@ -71,6 +74,7 @@ export class PublicEndpointServer {
         if (!adminSession) {
             console.log(`No admin session for unknown public endpoint: ${subdomain}`);
             res.writeHead(404);
+            res.end();
             return;
         }
 
