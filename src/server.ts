@@ -47,12 +47,12 @@ export async function startServers(options: {
     adminPort: number;
     publicPort: number;
 }) {
-    const servers = await Promise.all([
+    const servers: DestroyableServer[] = await Promise.all([
         startAdminServer({ adminPort: options.adminPort }),
         startPublicUrlServer({ publicPort: options.publicPort })
     ]);
 
-    return servers as DestroyableServer[];
+    return servers;
 }
 
 // This is not a perfect test (various odd cases) but good enough

@@ -11,6 +11,7 @@ spec:
       protocol: TCP
       port: 4000
       targetPort: 4000
+      appProtocol: h2c
     - name: endpoints-port
       protocol: TCP
       port: 4040

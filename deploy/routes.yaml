@@ -7,6 +7,10 @@ spec:
   parentRefs:
     - name: main-gateway
       namespace: envoy-gateway-system
+      sectionName: http
+    - name: main-gateway
+      namespace: envoy-gateway-system
+      sectionName: https-httptoolk-it
   hostnames:
     - "*.e.httptoolk.it"
   rules:
@@ -27,6 +31,7 @@ spec:
   parentRefs:
     - name: main-gateway
       namespace: envoy-gateway-system
+      sectionName: https-httptoolkit-tech
   hostnames:
     - "public-endpoint.httptoolkit.tech"
   rules:
@@ -35,5 +40,5 @@ spec:
             type: PathPrefix
             value: /
       backendRefs:
-        - name: endpoint-admin
+        - name: public-endpoint
           port: 4000
