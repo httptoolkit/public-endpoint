@@ -16,4 +16,24 @@ spec:
             value: /
       backendRefs:
         - name: public-endpoint
-          port: 80
+          port: 4040
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: public-endpoint-route-httptoolkit-tech
+  namespace: public-endpoint
+spec:
+  parentRefs:
+    - name: main-gateway
+      namespace: envoy-gateway-system
+  hostnames:
+    - "public-endpoint.httptoolkit.tech"
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: endpoint-admin
+          port: 4000

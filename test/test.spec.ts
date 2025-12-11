@@ -19,14 +19,17 @@ function sendH2Request(port: number, path: string): Promise<{ headers: http2.Inc
     });
 }
 
+const ADMIN_PORT = 5050;
+const PUBLIC_PORT = 5001;
+
 describe("Server setup", () => {
 
     let servers: DestroyableServer[];
 
     beforeEach(async () => {
         servers = await startServers({
-            adminPort: 5050,
-            publicPorts: [5001]
+            adminPort: ADMIN_PORT,
+            publicPort: PUBLIC_PORT
         });
     });
 
@@ -35,7 +38,7 @@ describe("Server setup", () => {
     });
 
     it("sets up a public endpoint", async () => {
-        const response = await fetch('http://localhost:5001/');
+        const response = await fetch(`http://localhost:${PUBLIC_PORT}/`);
         const text = await response.text();
 
         expect(response.status).to.equal(200);
@@ -43,7 +46,7 @@ describe("Server setup", () => {
     });
 
     it("sets up a admin API endpoint", async () => {
-        const h2Response = await sendH2Request(5050, '/');
+        const h2Response = await sendH2Request(ADMIN_PORT, '/');
 
         expect(h2Response.headers[':status']).to.equal(200);
 

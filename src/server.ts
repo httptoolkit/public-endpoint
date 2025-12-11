@@ -22,7 +22,7 @@ async function startAdminServer(options: {
 }
 
 async function startPublicUrlServer(options: {
-    publicPorts: number[];
+    publicPort: number;
 }) {
     const server = makeDestroyable(httpolyglot.createServer({
         socks: undefined,
@@ -34,27 +34,22 @@ async function startPublicUrlServer(options: {
         res.end('Hello from Public URL Server!\n');
     }));
 
-    await Promise.all([
-        options.publicPorts.map((port) => {
-            return new Promise<void>((resolve) => {
-                server.listen(port, () => {
-                    console.log(`Public URL Server listening on port ${port}`);
-                    resolve();
-                });
-            });
-        })
-    ]);
+    await new Promise<void>((resolve) => {
+        server.listen(options.publicPort, () => {
+            resolve();
+        });
+    });
 
     return server;
 }
 
 export async function startServers(options: {
     adminPort: number;
-    publicPorts: number[];
+    publicPort: number;
 }) {
     const servers = await Promise.all([
         startAdminServer({ adminPort: options.adminPort }),
-        startPublicUrlServer({ publicPorts: options.publicPorts })
+        startPublicUrlServer({ publicPort: options.publicPort })
     ]);
 
     return servers as DestroyableServer[];
@@ -65,7 +60,7 @@ const wasRunDirectly = import.meta.filename === process?.argv[1];
 if (wasRunDirectly) {
     startServers({
         adminPort: parseInt(process.env.ADMIN_PORT ?? '4000', 10),
-        publicPorts: (process.env.PUBLIC_PORTS ?? '8080').split(',').map(p => parseInt(p, 10))
+        publicPort: parseInt(process.env.PUBLIC_PORT ?? '4040', 10)
     }).then(() => {
         console.log('Server started');
     });
