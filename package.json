@@ -36,6 +36,7 @@
   "dependencies": {
     "@httptoolkit/httpolyglot": "^3.0.1",
     "destroyable-server": "^1.1.1",
+    "nanoid": "^5.1.6",
     "tsx": "^4.19.3"
   },
   "devDependencies": {

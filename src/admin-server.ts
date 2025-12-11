@@ -3,7 +3,11 @@ import * as crypto from 'crypto';
 import * as http from 'http';
 import * as http2 from 'http2';
 
+import * as nanoid from 'nanoid';
 import { DestroyableServer, makeDestroyable } from 'destroyable-server';
+
+const SUBDOMAIN_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
+const generateEndpointId = nanoid.customAlphabet(SUBDOMAIN_ID_ALPHABET, 8);
 
 export class AdminServer {
 
@@ -87,7 +91,7 @@ export class AdminServer {
             stream.end(JSON.stringify({ error: 'Auth required' }));
         }
 
-        const endpointId = crypto.randomBytes(8).toString('hex');
+        const endpointId = generateEndpointId();
         const adminSession = new AdminSession(endpointId, stream, session);
         this.connectionMap.set(endpointId, adminSession);
 
