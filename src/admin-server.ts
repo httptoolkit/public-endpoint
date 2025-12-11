@@ -79,7 +79,7 @@ export class AdminServer {
         });
 
         session.on('close', () => {
-            console.error(`Admin session (${adminSession?.id}) close`);
+            console.error(`Admin connection for session (${adminSession?.id}) closed`);
         });
     }
 
@@ -104,6 +104,7 @@ export class AdminServer {
         }) + '\n');
 
         stream.on('close', () => {
+            console.log(`Admin stream for endpoint ${endpointId} closed`);
             this.connectionMap.delete(endpointId);
             adminSession.close();
         });
@@ -126,7 +127,7 @@ class AdminSession {
 
     public readonly id: string;
     private readonly controlStream: http2.ServerHttp2Stream;
-    private readonly session: http2.ServerHttp2Session;
+    private readonly h2Session: http2.ServerHttp2Session;
 
     private requestMap = new Map<string, RequestSession>();
 
@@ -137,12 +138,13 @@ class AdminSession {
     ) {
         this.id = id;
         this.controlStream = controlStream;
-        this.session = session;
+        this.h2Session = session;
     }
 
     close() {
+        console.log(`Shutting down admin session ${this.id}}`);
         this.controlStream.end();
-        this.session.close();
+        this.h2Session.close();
 
         for (let requestSession of this.requestMap.values()) {
             requestSession.close();
@@ -150,7 +152,7 @@ class AdminSession {
 
         // Try to cleanup nicely, then just kill everything
         setTimeout(() => {
-            this.session.destroy();
+            this.h2Session.destroy();
         }, 5_000);
     }
 
