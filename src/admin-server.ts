@@ -66,6 +66,7 @@ export class AdminServer {
                     }
 
                     requestSession.attachControlStream(stream);
+                    return;
                 }
             }
 
