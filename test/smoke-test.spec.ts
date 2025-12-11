@@ -45,7 +45,7 @@ describe("Smoke test", () => {
             ':path': '/start'
         });
 
-        const [headers] = await once(adminReq, 'response') as [http2.IncomingHttpHeaders];
+        const [headers] = await once(adminReq, 'response') as [http2.OutgoingHttpHeaders];
         expect(headers[':status']).to.equal(200);
 
         const lineStream = createInterface({ input: adminReq, crlfDelay: Infinity });
@@ -61,11 +61,7 @@ describe("Smoke test", () => {
         expect(adminResponse.success).to.equal(true);
         expect(adminResponse.endpointId).to.be.a('string');
 
-        const endpointRequest = fetch(`http://${adminResponse.endpointId}.e.localhost:${PUBLIC_PORT}/test-path`, {
-            headers: {
-                'Host': adminResponse.endpointId + '.e.localhost',
-            }
-        });
+        const endpointRequest = fetch(`http://${adminResponse.endpointId}.e.localhost:${PUBLIC_PORT}/test-path`);
 
         [nextLine] = await once(lineStream, 'line') as [string];
         const requestSetupCommand = JSON.parse(nextLine);
