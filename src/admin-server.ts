@@ -28,7 +28,7 @@ export class AdminServer {
             this.server.listen({ port: this.port }, resolve);
         });
 
-        setTimeout(() => {
+        setInterval(() => {
             console.log(`${this.connectionMap.size} admin connections open, with ${
                 [...this.connectionMap.values()]
                 .map(c => c.getActiveRequestCount())
