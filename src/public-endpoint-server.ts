@@ -40,8 +40,10 @@ export class PublicEndpointServer {
     }
 
     private handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
-        const hostHeader = req.headers['host'] || '';
-        const [hostname, port] = hostHeader.split(':');
+        const hostHeader = req.headers[':authority'] as string | undefined ||
+            req.headers['host'] ||
+            '';
+        const [hostname] = hostHeader.split(':');
         console.log(`Received public endpoint request for host: ${hostHeader}, url: ${req.url}`);
 
         if (!hostname.endsWith(this.rootDomain)) {
