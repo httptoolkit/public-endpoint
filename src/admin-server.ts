@@ -27,6 +27,14 @@ export class AdminServer {
         await new Promise<void>((resolve) => {
             this.server.listen({ port: this.port }, resolve);
         });
+
+        setTimeout(() => {
+            console.log(`${this.connectionMap.size} admin connections open, with ${
+                [...this.connectionMap.values()]
+                .map(c => c.getActiveRequestCount())
+                .reduce((a, b) => a + b, 0)
+            } active requests.`)
+        }, 30_000).unref();
     }
 
     public async destroy() {
@@ -175,6 +183,10 @@ class AdminSession {
 
     getRequestSession(requestId: string): RequestSession | undefined {
         return this.requestMap.get(requestId);
+    }
+
+    getActiveRequestCount(): number {
+        return this.requestMap.size;
     }
 
     cleanupRequest(requestId: string) {
