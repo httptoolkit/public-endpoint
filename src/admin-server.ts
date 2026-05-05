@@ -310,11 +310,26 @@ class RequestSession {
 
 function getNextLine(rl: readline.Interface): Promise<string> {
     return new Promise((resolve, reject) => {
-        rl.once('line', (line) => {
+        const onLine = (line: string) => {
             if (!line) return; // Ignore empty lines, can be used as keep-alives
+            cleanup();
             resolve(line);
-        });
-        rl.once('end', () => reject(new Error('Stream ended unexpected')));
-        rl.once('error', reject);
+        };
+        const onEnd = () => {
+            cleanup();
+            reject(new Error('Stream ended unexpectedly'));
+        };
+        const onError = (err: Error) => {
+            cleanup();
+            reject(err);
+        };
+        const cleanup = () => {
+            rl.removeListener('line', onLine);
+            rl.removeListener('close', onEnd);
+            rl.removeListener('error', onError);
+        };
+        rl.on('line', onLine);
+        rl.on('close', onEnd);
+        rl.on('error', onError);
     });
 }
