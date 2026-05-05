@@ -8,7 +8,8 @@
     "start": "tsx src/server.ts",
     "start:dev": "tsx --watch src/server.ts",
     "build": "tsc",
-    "test": "mocha -r tsx test/**/*.spec.ts"
+    "test:mocha": "mocha -r tsx test/**/*.spec.ts",
+    "test": "npm run build && npm run test:mocha"
   },
   "repository": {
     "type": "git",

@@ -8,10 +8,12 @@
         "allowSyntheticDefaultImports": true,
         "erasableSyntaxOnly": true,
         "sourceMap": true,
-        "strict": true
+        "strict": true,
+        "allowImportingTsExtensions": true
     },
     "include": [
         "custom-typings/*.d.ts",
-        "src/**/*.ts"
+        "src/**/*.ts",
+        "test/**/*.ts"
     ]
 }
