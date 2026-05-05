@@ -13,6 +13,8 @@ export class PublicEndpointServer {
     private readonly adminServer: AdminServer;
     private readonly server: DestroyableServer;
 
+    private destroyed = false;
+
     constructor(
         adminServer: AdminServer,
         port: number,
@@ -36,7 +38,17 @@ export class PublicEndpointServer {
     }
 
     public async destroy() {
-        return this.server.destroy();
+        if (this.destroyed) return;
+        this.destroyed = true;
+        await this.server.destroy();
+    }
+
+    public async shutdown(graceMs: number) {
+        if (this.destroyed) return;
+        this.destroyed = true;
+        const closed = new Promise<void>((resolve) => this.server.close(() => resolve()));
+        const grace = new Promise<void>((resolve) => setTimeout(resolve, graceMs).unref());
+        await Promise.race([closed, grace]);
     }
 
     private handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {

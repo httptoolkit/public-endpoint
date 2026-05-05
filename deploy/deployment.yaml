@@ -13,6 +13,8 @@ spec:
       labels:
         app: public-endpoint
     spec:
+      # App's SHUTDOWN_GRACE_MS is 5s; give a couple of seconds headroom before SIGKILL.
+      terminationGracePeriodSeconds: 10
       containers:
         - name: server
           image: ghcr.io/httptoolkit/public-endpoint:latest # GHA replaces :latest on build
@@ -21,6 +23,8 @@ spec:
               value: "4000"
             - name: PUBLIC_PORTS
               value: "4040"
+            - name: SHUTDOWN_GRACE_MS
+              value: "5000"
           ports:
             - containerPort: 4000
             - containerPort: 4040

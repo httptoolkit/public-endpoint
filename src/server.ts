@@ -31,10 +31,11 @@ if (wasRunDirectly) {
     }).then((servers) => {
         console.log('Server started');
 
+        const SHUTDOWN_GRACE_MS = parseInt(process.env.SHUTDOWN_GRACE_MS ?? '5000', 10);
+
         process.on('SIGTERM', async () => {
-            console.log('Received SIGTERM, shutting down...');
-            // Close all connections when asked nicely to shut down:
-            await Promise.all(servers.map(s => s.destroy()));
+            console.log(`Received SIGTERM, shutting down (grace ${SHUTDOWN_GRACE_MS}ms)...`);
+            await Promise.all(servers.map(s => s.shutdown(SHUTDOWN_GRACE_MS)));
             process.exit(0);
         });
     });

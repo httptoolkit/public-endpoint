@@ -20,6 +20,8 @@ export class AdminServer {
 
     private readonly connectionMap = new Map<string, AdminSession>();
 
+    private destroyed = false;
+
     constructor(port: number) {
         this.port = port;
 
@@ -42,7 +44,35 @@ export class AdminServer {
     }
 
     public async destroy() {
-        return this.server.destroy();
+        if (this.destroyed) return;
+        this.destroyed = true;
+        await this.server.destroy();
+    }
+
+    public async shutdown(graceMs: number) {
+        if (this.destroyed) return;
+        this.destroyed = true;
+
+        // Stop the listener; callback resolves once the server fully closes.
+        const listenerClosed = new Promise<void>((resolve) => this.server.close(() => resolve()));
+
+        // Notify each client and GOAWAY their H2 session — this synchronously prevents
+        // any new streams (including /start) from being created on existing sessions,
+        // while letting in-flight streams complete within the grace window.
+        for (const session of this.connectionMap.values()) {
+            session.notifyShutdown();
+        }
+
+        const grace = new Promise<void>((resolve) => setTimeout(resolve, graceMs).unref());
+        await Promise.race([listenerClosed, grace]);
+
+        // Force-kill anything still active:
+        for (const session of this.connectionMap.values()) {
+            session.close(true);
+        }
+
+        // Wait till all sockets are fully gone
+        await listenerClosed;
     }
 
     private handleSession(session: http2.ServerHttp2Session) {
@@ -198,24 +228,41 @@ class AdminSession {
         }
     }
 
-    close() {
+    notifyShutdown() {
+        try {
+            this.controlStream.write(JSON.stringify({ command: 'shutdown' }) + '\n');
+        } catch (e) {
+            console.warn(`Failed to notify shutdown to admin session ${this.id}:`, e);
+        }
+        // GOAWAY: blocks any new streams on this H2 session, in-flight streams continue.
+        try {
+            this.h2Session.close();
+        } catch (e) {}
+    }
+
+    close(force = false) {
         if (this.closed) return;
         this.closed = true;
 
-        console.log(`Shutting down admin session ${this.id}`);
+        console.log(`Shutting down admin session ${this.id}${force ? ' (forced)' : ''}`);
         clearInterval(this.keepaliveInterval);
 
-        try { this.controlStream.end(); } catch (e) {}
-        try { this.h2Session.close(); } catch (e) {}
+        if (force) {
+            try { this.controlStream.destroy(); } catch (e) {}
+            try { this.h2Session.destroy(); } catch (e) {}
+        } else {
+            try { this.controlStream.end(); } catch (e) {}
+            try { this.h2Session.close(); } catch (e) {}
+
+            // Try to cleanup nicely, then just kill everything
+            setTimeout(() => {
+                this.h2Session.destroy();
+            }, 5_000).unref();
+        }
 
         for (let requestSession of this.requestMap.values()) {
             requestSession.close();
         }
-
-        // Try to cleanup nicely, then just kill everything
-        setTimeout(() => {
-            this.h2Session.destroy();
-        }, 5_000).unref();
 
         this.onCloseCb();
     }
@@ -337,6 +384,10 @@ class RequestSession {
         this.req.pipe(tunnelledReq);
 
         tunnelledReq.on('response', (tunnelledRes) => {
+            // The error handler may already have responded (e.g. tunnel torn down
+            // mid-flight); skip the late response in that case.
+            if (this.res.headersSent || this.res.writableEnded) return;
+
             // Disable default respose headers - we're going to use the exact
             // headers provided:
             [
@@ -370,6 +421,7 @@ class RequestSession {
         clearTimeout(this.attachTimeout);
 
         try {
+            if (!this.res.headersSent) this.res.writeHead(502);
             this.res.end();
         } catch (e) {}
         try {
