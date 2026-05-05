@@ -9,6 +9,10 @@ import { DestroyableServer, makeDestroyable } from 'destroyable-server';
 const SUBDOMAIN_ID_ALPHABET = '0123456789abcdefghijklmnopqrstuvwxyz';
 const generateEndpointId = nanoid.customAlphabet(SUBDOMAIN_ID_ALPHABET, 8);
 
+const REQUEST_ATTACH_TIMEOUT_MS = 30_000;
+const ADMIN_KEEPALIVE_INTERVAL_MS = 30_000;
+const ADMIN_KEEPALIVE_TIMEOUT_MS = 30_000;
+
 export class AdminServer {
 
     private readonly port: number;
@@ -148,6 +152,9 @@ class AdminSession {
 
     private requestMap = new Map<string, RequestSession>();
 
+    private closed = false;
+    private readonly keepaliveInterval: NodeJS.Timeout;
+
     constructor(
         id: string,
         controlStream: http2.ServerHttp2Stream,
@@ -156,10 +163,43 @@ class AdminSession {
         this.id = id;
         this.controlStream = controlStream;
         this.h2Session = session;
+
+        this.keepaliveInterval = setInterval(() => this.sendKeepalivePing(), ADMIN_KEEPALIVE_INTERVAL_MS);
+        this.keepaliveInterval.unref();
+    }
+
+    private sendKeepalivePing() {
+        if (this.closed || this.h2Session.destroyed) return;
+
+        let pongReceived = false;
+        const timeout = setTimeout(() => {
+            if (pongReceived) return;
+            console.warn(`Admin session ${this.id} keepalive ping timed out, closing`);
+            this.close();
+        }, ADMIN_KEEPALIVE_TIMEOUT_MS);
+        timeout.unref();
+
+        const accepted = this.h2Session.ping((err) => {
+            pongReceived = true;
+            clearTimeout(timeout);
+            if (err && !this.closed && !this.h2Session.destroyed) {
+                console.warn(`Admin session ${this.id} keepalive ping failed:`, err.message);
+                this.close();
+            }
+        });
+
+        if (!accepted) {
+            // ping() returns false if the session is closed/closing — nothing to wait on
+            clearTimeout(timeout);
+        }
     }
 
     close() {
-        console.log(`Shutting down admin session ${this.id}}`);
+        if (this.closed) return;
+        this.closed = true;
+
+        console.log(`Shutting down admin session ${this.id}`);
+        clearInterval(this.keepaliveInterval);
         this.controlStream.end();
         this.h2Session.close();
 
@@ -170,7 +210,7 @@ class AdminSession {
         // Try to cleanup nicely, then just kill everything
         setTimeout(() => {
             this.h2Session.destroy();
-        }, 5_000);
+        }, 5_000).unref();
     }
 
     startRequest(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -208,6 +248,9 @@ class RequestSession {
     private responseClosed: boolean;
     private readonly cleanupCb: (id: string) => void;
 
+    private attached = false;
+    private readonly attachTimeout: NodeJS.Timeout;
+
     constructor(
         id: string,
         req: http.IncomingMessage,
@@ -231,6 +274,19 @@ class RequestSession {
             this.maybeCleanup();
         });
 
+        this.attachTimeout = setTimeout(() => {
+            if (this.attached) return;
+            console.warn(`Request session ${this.id} timed out before control stream attached`);
+            try {
+                this.res.writeHead(504);
+                this.res.end();
+            } catch (e) {}
+            try {
+                this.req.destroy();
+            } catch (e) {}
+        }, REQUEST_ATTACH_TIMEOUT_MS);
+        this.attachTimeout.unref();
+
         // In case they're somehow immediately closed, make sure we don't get stuck
         // waiting for events that never come (but debounce so startRequest setup
         // properly starts before cleanup).
@@ -241,11 +297,15 @@ class RequestSession {
 
     maybeCleanup() {
         if (this.requestClosed && this.responseClosed) {
+            clearTimeout(this.attachTimeout);
             this.cleanupCb(this.id);
         }
     }
 
     attachControlStream(stream: http2.ServerHttp2Stream) {
+        this.attached = true;
+        clearTimeout(this.attachTimeout);
+
         stream.respond({ ':status': 200 });
 
         const tunnelledReq = http.request({
@@ -299,7 +359,8 @@ class RequestSession {
 
     close() {
         // Hard shutdown everything
-        console.log(`Shutting down active request session ${this.id}}`);
+        console.log(`Shutting down active request session ${this.id}`);
+        clearTimeout(this.attachTimeout);
 
         try {
             this.res.end();
