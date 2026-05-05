@@ -116,19 +116,16 @@ export class AdminServer {
         }
 
         const endpointId = generateEndpointId();
-        const adminSession = new AdminSession(endpointId, stream, session);
+        const adminSession = new AdminSession(endpointId, stream, session, () => {
+            console.log(`Admin session ${endpointId} closed`);
+            this.connectionMap.delete(endpointId);
+        });
         this.connectionMap.set(endpointId, adminSession);
 
         stream.write(JSON.stringify({
             success: true,
             endpointId
         }) + '\n');
-
-        stream.on('close', () => {
-            console.log(`Admin stream for endpoint ${endpointId} closed`);
-            this.connectionMap.delete(endpointId);
-            adminSession.close();
-        });
 
         lineStream.on('line', (line) => {
             if (!line) return; // Ignore empty lines, can be used as keep-alives
@@ -158,15 +155,22 @@ class AdminSession {
     constructor(
         id: string,
         controlStream: http2.ServerHttp2Stream,
-        session: http2.ServerHttp2Session
+        session: http2.ServerHttp2Session,
+        onClose: () => void
     ) {
         this.id = id;
         this.controlStream = controlStream;
         this.h2Session = session;
+        this.onCloseCb = onClose;
+
+        controlStream.on('close', () => this.close());
+        session.on('close', () => this.close());
 
         this.keepaliveInterval = setInterval(() => this.sendKeepalivePing(), ADMIN_KEEPALIVE_INTERVAL_MS);
         this.keepaliveInterval.unref();
     }
+
+    private readonly onCloseCb: () => void;
 
     private sendKeepalivePing() {
         if (this.closed || this.h2Session.destroyed) return;
@@ -200,8 +204,9 @@ class AdminSession {
 
         console.log(`Shutting down admin session ${this.id}`);
         clearInterval(this.keepaliveInterval);
-        this.controlStream.end();
-        this.h2Session.close();
+
+        try { this.controlStream.end(); } catch (e) {}
+        try { this.h2Session.close(); } catch (e) {}
 
         for (let requestSession of this.requestMap.values()) {
             requestSession.close();
@@ -211,6 +216,8 @@ class AdminSession {
         setTimeout(() => {
             this.h2Session.destroy();
         }, 5_000).unref();
+
+        this.onCloseCb();
     }
 
     startRequest(req: http.IncomingMessage, res: http.ServerResponse) {
