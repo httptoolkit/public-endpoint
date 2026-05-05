@@ -255,6 +255,17 @@ class RequestSession {
             setDefaultHeaders: false,
             createConnection: () => stream
         });
+
+        const handleTunnelError = (err: Error) => {
+            console.error('Error in tunneled request:', err);
+            try {
+                this.res.writeHead(502);
+                this.res.end();
+                setImmediate(() => this.req.destroy());
+            } catch (e) {}
+        };
+
+        tunnelledReq.on('error', handleTunnelError);
         tunnelledReq.flushHeaders();
         this.req.pipe(tunnelledReq);
 
@@ -284,14 +295,6 @@ class RequestSession {
             });
         });
 
-        tunnelledReq.on('error', (err) => {
-            console.error('Error in tunneled request:', err);
-            try {
-                this.res.writeHead(502);
-                this.res.end();
-                setImmediate(() => this.req.destroy());
-            } catch (e) {}
-        });
     }
 
     close() {
