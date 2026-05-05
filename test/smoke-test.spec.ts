@@ -1,99 +1,70 @@
-import { once } from 'events';
-import { createInterface } from 'readline';
-import * as http from 'http';
-import * as http2 from 'http2';
 import { expect } from 'chai';
 
-import { startServers } from '../src/server.ts';
-
-function sendH2Request(port: number, path: string): Promise<{ headers: http2.IncomingHttpHeaders; stream: http2.ClientHttp2Stream }> {
-    return new Promise((resolve, reject) => {
-        const client = http2.connect(`http://localhost:${port}`);
-        const req = client.request({ ':path': path });
-
-        req.on('response', (headers) => {
-            resolve({ headers, stream: req });
-        });
-        req.on('error', reject);
-        req.end();
-    });
-}
-
-const ADMIN_PORT = 5050;
-const PUBLIC_PORT = 5001;
+import {
+    setupServers,
+    startTunnelClient,
+    fetchEndpoint,
+    delay,
+} from './test-utils.ts';
 
 describe("Smoke test", () => {
 
-    let servers: Array<{ destroy: () => Promise<void> }>;
+    setupServers();
 
-    beforeEach(async () => {
-        servers = await startServers({
-            adminPort: ADMIN_PORT,
-            publicPort: PUBLIC_PORT,
-            publicRootDomain: 'e.localhost'
+    it("registers a tunnel, serves a varied request mix, then unregisters cleanly on disconnect", async () => {
+        const tunnel = await startTunnelClient();
+
+        await tunnel.mockServer.forGet('/teapot').thenReply(418, 'short and stout', {
+            'X-Backend': 'on'
         });
-    });
-
-    afterEach(async () => {
-        await Promise.all(servers.map(s => s.destroy()));
-    });
-
-    it("can create & tunnel an HTTP request", async () => {
-        const h2Client = http2.connect(`http://localhost:${ADMIN_PORT}/`);
-        const adminReq = h2Client.request({
-            ':method': 'POST',
-            ':path': '/start'
-        });
-
-        const [headers] = await once(adminReq, 'response') as [http2.OutgoingHttpHeaders];
-        expect(headers[':status']).to.equal(200);
-
-        const lineStream = createInterface({ input: adminReq, crlfDelay: Infinity });
-        let nextLine: string | undefined;
-
-        adminReq.write(JSON.stringify({
-            command: 'auth',
-            params: {} // TODO: We'll authenticate properly later
-        }) + '\n');
-
-        [nextLine] = await once(lineStream, 'line') as [string];
-        const adminResponse = JSON.parse(nextLine);
-        expect(adminResponse.success).to.equal(true);
-        expect(adminResponse.endpointId).to.be.a('string');
-
-        const endpointRequest = fetch(`http://${adminResponse.endpointId}.e.localhost:${PUBLIC_PORT}/test-path`);
-
-        [nextLine] = await once(lineStream, 'line') as [string];
-        const requestSetupCommand = JSON.parse(nextLine);
-        expect(requestSetupCommand.command).to.equal('new-request');
-        expect(requestSetupCommand.requestId).to.be.a('string');
-
-        const requestSession = h2Client.request({
-            ':method': 'POST',
-            ':path': `/request/${requestSetupCommand.requestId}`
-        });
-
-        requestSession.on('response', (headers) => {
-            expect(headers[':status']).to.equal(200);
-
-            const httpServer = http.createServer((req, res) => {
-                expect(req.url).to.equal('/test-path');
-                res.writeHead(200);
-                res.end('Hello through tunnel!');
+        const echoEndpoint = await tunnel.mockServer
+            .forAnyRequest()
+            .matching((req) => req.path.startsWith('/echo'))
+            .thenCallback(async (req) => {
+                const body = await req.body.getText();
+                return {
+                    statusCode: 200,
+                    headers: { 'Content-Type': 'text/plain' },
+                    body: `${req.method}:${req.headers['x-trace'] ?? '-'}:${body}`
+                };
             });
-            httpServer.emit('connection', requestSession);
+
+        // 1) GET — basic forwarding, custom status & response header.
+        const teapot = await fetchEndpoint(tunnel.endpointId, '/teapot');
+        expect(teapot.status).to.equal(418);
+        expect(teapot.headers.get('x-backend')).to.equal('on');
+        expect(await teapot.text()).to.equal('short and stout');
+
+        // 2) POST with body and custom request header.
+        const echo = await fetchEndpoint(tunnel.endpointId, '/echo', {
+            method: 'POST',
+            headers: { 'X-Trace': 'abc123' },
+            body: 'payload-data'
         });
+        expect(echo.status).to.equal(200);
+        expect(echo.headers.get('content-type')).to.equal('text/plain');
+        expect(await echo.text()).to.equal('POST:abc123:payload-data');
 
-        const endpointResponse = await endpointRequest;
-        expect(endpointResponse.status).to.equal(200);
-        const endpointText = await endpointResponse.text();
-        expect(endpointText).to.equal('Hello through tunnel!');
+        // 3) Concurrent requests on the same tunnel.
+        const concurrent = await Promise.all([
+            fetchEndpoint(tunnel.endpointId, '/echo/a', { method: 'PUT', body: 'A' }).then(r => r.text()),
+            fetchEndpoint(tunnel.endpointId, '/echo/b', { method: 'PUT', body: 'B' }).then(r => r.text()),
+            fetchEndpoint(tunnel.endpointId, '/echo/c', { method: 'PUT', body: 'C' }).then(r => r.text()),
+        ]);
+        expect(concurrent.sort()).to.deep.equal(['PUT:-:A', 'PUT:-:B', 'PUT:-:C']);
 
-        adminReq.write(JSON.stringify({
-            command: 'end'
-        }) + '\n');
-        adminReq.close();
-        h2Client.close();
+        // The Mockttp echo endpoint saw all four /echo* requests.
+        const seenEchoes = await echoEndpoint.getSeenRequests();
+        expect(seenEchoes.map(r => r.path).sort()).to.deep.equal([
+            '/echo', '/echo/a', '/echo/b', '/echo/c'
+        ]);
+
+        // 4) Admin client disconnects — endpoint should disappear.
+        await tunnel.close();
+        await delay(50);
+
+        const afterDisconnect = await fetchEndpoint(tunnel.endpointId, '/teapot');
+        expect(afterDisconnect.status).to.equal(404);
     });
 
 });

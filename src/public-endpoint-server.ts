@@ -65,7 +65,7 @@ export class PublicEndpointServer {
             return;
         }
 
-        // No tunnelling through public endpoints (that's a whole separate thing -hostHeader
+        // No tunnelling through public endpoints (that's a whole separate thing -
         // watch this space!)
         if (req.method === 'CONNECT') {
             console.log(`Rejected CONNECT request on public endpoint: ${hostHeader}`);
