@@ -54,6 +54,7 @@ export class AdminServer {
                         stream.respond({ ':status': 400 });
                         stream.end();
                         adminSession.close();
+                        return;
                     }
                     try {
                         adminSession = await this.handleStartRequest(stream, session);
@@ -67,6 +68,7 @@ export class AdminServer {
                 } else if (!adminSession) {
                     console.log(`${headers[':path']} request on an admin stream before /start`)
                     stream.respond({ ':status': 400 });
+                    stream.end();
                     return;
                 } else if (headers[':path']?.startsWith('/request/')) {
                     const requestId = headers[':path'].slice('/request/'.length);
@@ -106,6 +108,7 @@ export class AdminServer {
 
         if (firstCommand.command !== 'auth') {
             stream.end(JSON.stringify({ error: 'Auth required' }));
+            return;
         }
 
         const endpointId = generateEndpointId();
