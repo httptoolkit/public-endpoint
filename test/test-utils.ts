@@ -143,6 +143,28 @@ export function fetchEndpoint(endpointId: string, path: string = '/', init?: Req
     return fetch(`http://${endpointId}.${ROOT_DOMAIN}:${PUBLIC_PORT}${path}`, init);
 }
 
+export function publicHostHeader(endpointId: string): string {
+    return `${endpointId}.${ROOT_DOMAIN}:${PUBLIC_PORT}`;
+}
+
+export function readToEnd(socket: net.Socket): Promise<Buffer> {
+    return new Promise((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        socket.on('data', (c) => chunks.push(c));
+        socket.on('end', () => resolve(Buffer.concat(chunks)));
+        socket.on('close', () => resolve(Buffer.concat(chunks)));
+        socket.on('error', reject);
+    });
+}
+
+/** Open a raw TCP connection to the public endpoint, send the given bytes, return the full reply. */
+export async function rawPublicRequest(requestBytes: string | Buffer): Promise<Buffer> {
+    const socket = net.createConnection(PUBLIC_PORT, '127.0.0.1');
+    await once(socket, 'connect');
+    socket.write(requestBytes);
+    return readToEnd(socket);
+}
+
 export function delay(ms: number) {
     return new Promise<void>(resolve => setTimeout(resolve, ms));
 }

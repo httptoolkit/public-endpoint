@@ -2,6 +2,7 @@ import * as readline from 'readline';
 import * as crypto from 'crypto';
 import * as http from 'http';
 import * as http2 from 'http2';
+import * as net from 'net';
 
 import * as nanoid from 'nanoid';
 import { DestroyableServer, makeDestroyable } from 'destroyable-server';
@@ -177,7 +178,7 @@ class AdminSession {
     private readonly controlStream: http2.ServerHttp2Stream;
     private readonly h2Session: http2.ServerHttp2Session;
 
-    private requestMap = new Map<string, RequestSession>();
+    private requestMap = new Map<string, RequestSession | UpgradeSession | H2RequestSession>();
 
     private closed = false;
     private readonly keepaliveInterval: NodeJS.Timeout;
@@ -278,7 +279,29 @@ class AdminSession {
         }) + '\n');
     }
 
-    getRequestSession(requestId: string): RequestSession | undefined {
+    startUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer) {
+        const requestId = crypto.randomBytes(16).toString('hex');
+        const session = new UpgradeSession(requestId, req, socket, head, this.cleanupRequest.bind(this));
+        this.requestMap.set(requestId, session);
+
+        this.controlStream.write(JSON.stringify({
+            command: 'new-request',
+            requestId
+        }) + '\n');
+    }
+
+    startH2Stream(stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) {
+        const requestId = crypto.randomBytes(16).toString('hex');
+        const session = new H2RequestSession(requestId, stream, headers, this.cleanupRequest.bind(this));
+        this.requestMap.set(requestId, session);
+
+        this.controlStream.write(JSON.stringify({
+            command: 'new-request',
+            requestId
+        }) + '\n');
+    }
+
+    getRequestSession(requestId: string): RequestSession | UpgradeSession | H2RequestSession | undefined {
         return this.requestMap.get(requestId);
     }
 
@@ -381,7 +404,15 @@ class RequestSession {
 
         tunnelledReq.on('error', handleTunnelError);
         tunnelledReq.flushHeaders();
-        this.req.pipe(tunnelledReq);
+
+        // Forward request body and trailers without auto-ending — we need to attach
+        // any inbound trailers before ending the tunnelled request.
+        this.req.pipe(tunnelledReq, { end: false });
+        this.req.on('end', () => {
+            const trailers = pairsFromRawTrailers(this.req.rawTrailers);
+            if (trailers.length > 0) tunnelledReq.addTrailers(trailers);
+            tunnelledReq.end();
+        });
 
         tunnelledReq.on('response', (tunnelledRes) => {
             // The error handler may already have responded (e.g. tunnel torn down
@@ -401,7 +432,15 @@ class RequestSession {
 
             this.res.writeHead(tunnelledRes.statusCode!, tunnelledRes.rawHeaders);
             this.res.flushHeaders();
-            tunnelledRes.pipe(this.res);
+
+            // Forward response body without auto-ending so we can attach trailers
+            // before this.res.end().
+            tunnelledRes.pipe(this.res, { end: false });
+            tunnelledRes.on('end', () => {
+                const trailers = pairsFromRawTrailers(tunnelledRes.rawTrailers);
+                if (trailers.length > 0) this.res.addTrailers(trailers);
+                this.res.end();
+            });
 
             tunnelledRes.on('error', (err) => {
                 console.error('Error in tunneled response:', err);
@@ -429,6 +468,226 @@ class RequestSession {
         } catch (e) {}
     }
 
+}
+
+/**
+ * Tunnels a HTTP/1.1 Upgrade request (e.g. WebSocket) over the admin tunnel.
+ *
+ * Re-emits the original request on the tunnel stream verbatim using rawHeaders
+ * (preserving casing/order), then byte-splices the public socket and the tunnel
+ * stream so all post-upgrade bytes (101 response, frames in both directions)
+ * pass through untouched.
+ */
+class UpgradeSession {
+
+    public readonly id: string;
+    private readonly req: http.IncomingMessage;
+    private readonly socket: net.Socket;
+    private readonly head: Buffer;
+    private readonly cleanupCb: (id: string) => void;
+
+    private attached = false;
+    private readonly attachTimeout: NodeJS.Timeout;
+
+    constructor(
+        id: string,
+        req: http.IncomingMessage,
+        socket: net.Socket,
+        head: Buffer,
+        cleanupCb: (id: string) => void
+    ) {
+        this.id = id;
+        this.req = req;
+        this.socket = socket;
+        this.head = head;
+        this.cleanupCb = cleanupCb;
+
+        socket.on('close', () => {
+            clearTimeout(this.attachTimeout);
+            this.cleanupCb(this.id);
+        });
+
+        this.attachTimeout = setTimeout(() => {
+            if (this.attached) return;
+            console.warn(`Upgrade session ${this.id} timed out before control stream attached`);
+            try { this.socket.destroy(); } catch (e) {}
+        }, REQUEST_ATTACH_TIMEOUT_MS);
+        this.attachTimeout.unref();
+    }
+
+    attachControlStream(stream: http2.ServerHttp2Stream) {
+        this.attached = true;
+        clearTimeout(this.attachTimeout);
+
+        stream.respond({ ':status': 200 });
+
+        // Reconstruct the original HTTP/1.1 request line + headers verbatim.
+        const requestLine = `${this.req.method} ${this.req.url} HTTP/${this.req.httpVersion}\r\n`;
+        const headerLines: string[] = [];
+        for (let i = 0; i < this.req.rawHeaders.length; i += 2) {
+            headerLines.push(`${this.req.rawHeaders[i]}: ${this.req.rawHeaders[i + 1]}`);
+        }
+        stream.write(requestLine + headerLines.join('\r\n') + '\r\n\r\n');
+        if (this.head.length > 0) stream.write(this.head);
+
+        // Splice raw bytes both ways. The 101 response and all post-upgrade
+        // frames flow through unparsed.
+        this.socket.pipe(stream);
+        stream.pipe(this.socket);
+
+        const teardown = () => {
+            try { this.socket.destroy(); } catch (e) {}
+            try { stream.destroy(); } catch (e) {}
+        };
+        this.socket.on('error', teardown);
+        stream.on('error', teardown);
+        stream.on('close', () => {
+            try { this.socket.destroy(); } catch (e) {}
+        });
+    }
+
+    close() {
+        console.log(`Shutting down upgrade session ${this.id}`);
+        clearTimeout(this.attachTimeout);
+        try { this.socket.destroy(); } catch (e) {}
+    }
+}
+
+/**
+ * Tunnels a single inbound HTTP/2 request as HTTP/2 to the backend. We open a
+ * fresh `http2.connect` whose underlying connection is the tunnel stream, then
+ * issue one HTTP/2 request through it preserving pseudo-headers, regular headers
+ * and trailers in both directions.
+ */
+class H2RequestSession {
+
+    public readonly id: string;
+    private readonly inboundStream: http2.ServerHttp2Stream;
+    private readonly inboundHeaders: http2.IncomingHttpHeaders;
+    private readonly cleanupCb: (id: string) => void;
+
+    private attached = false;
+    private readonly attachTimeout: NodeJS.Timeout;
+    private respondedToInbound = false;
+
+    constructor(
+        id: string,
+        inboundStream: http2.ServerHttp2Stream,
+        inboundHeaders: http2.IncomingHttpHeaders,
+        cleanupCb: (id: string) => void
+    ) {
+        this.id = id;
+        this.inboundStream = inboundStream;
+        this.inboundHeaders = inboundHeaders;
+        this.cleanupCb = cleanupCb;
+
+        inboundStream.on('close', () => {
+            clearTimeout(this.attachTimeout);
+            this.cleanupCb(this.id);
+        });
+
+        this.attachTimeout = setTimeout(() => {
+            if (this.attached) return;
+            console.warn(`H2 request session ${this.id} timed out before control stream attached`);
+            try {
+                if (!this.respondedToInbound) {
+                    this.inboundStream.respond({ ':status': 504 });
+                }
+                this.inboundStream.end();
+            } catch (e) {}
+        }, REQUEST_ATTACH_TIMEOUT_MS);
+        this.attachTimeout.unref();
+    }
+
+    attachControlStream(tunnelStream: http2.ServerHttp2Stream) {
+        this.attached = true;
+        clearTimeout(this.attachTimeout);
+
+        tunnelStream.respond({ ':status': 200 });
+
+        // Open an h2c client whose underlying connection IS the tunnel stream.
+        const authority = (this.inboundHeaders[':authority'] as string | undefined) ?? 'localhost';
+        const scheme = (this.inboundHeaders[':scheme'] as string | undefined) ?? 'http';
+        const backend = http2.connect(`${scheme}://${authority}`, {
+            createConnection: () => tunnelStream as any
+        });
+
+        const fail502 = () => {
+            try {
+                if (!this.respondedToInbound) {
+                    this.inboundStream.respond({ ':status': 502 });
+                    this.respondedToInbound = true;
+                }
+                this.inboundStream.end();
+            } catch (e) {}
+            try { tunnelStream.destroy(); } catch (e) {}
+            try { backend.destroy(); } catch (e) {}
+        };
+
+        backend.on('error', (err) => {
+            console.error(`H2 backend session ${this.id} error:`, err);
+            fail502();
+        });
+        tunnelStream.on('error', (err) => {
+            console.error(`H2 tunnel stream ${this.id} error:`, err);
+            fail502();
+        });
+
+        // Forward all the inbound headers verbatim — pseudo-headers and regular
+        // alike — to the backend. http2's request() accepts this shape directly.
+        const backendReq = backend.request(this.inboundHeaders);
+        backendReq.on('error', (err) => {
+            console.error(`H2 backend request ${this.id} error:`, err);
+            fail502();
+        });
+
+        // Pipe the inbound body to the backend, then attach trailers (if any)
+        // before ending.
+        this.inboundStream.pipe(backendReq, { end: false });
+        const inboundTrailers: http2.IncomingHttpHeaders = {};
+        this.inboundStream.on('trailers', (t) => Object.assign(inboundTrailers, t));
+        this.inboundStream.on('end', () => {
+            if (Object.keys(inboundTrailers).length > 0) {
+                try { backendReq.sendTrailers(inboundTrailers); } catch (e) {}
+            } else {
+                backendReq.end();
+            }
+        });
+
+        // Pipe the backend response back to the inbound stream.
+        backendReq.on('response', (respHeaders) => {
+            if (this.respondedToInbound) return;
+            this.respondedToInbound = true;
+            this.inboundStream.respond(respHeaders);
+            backendReq.pipe(this.inboundStream, { end: false });
+            backendReq.on('trailers', (t) => {
+                try { this.inboundStream.sendTrailers(t); } catch (e) {}
+            });
+            backendReq.on('end', () => {
+                try { this.inboundStream.end(); } catch (e) {}
+            });
+        });
+    }
+
+    close() {
+        console.log(`Shutting down H2 request session ${this.id}`);
+        clearTimeout(this.attachTimeout);
+        try {
+            if (!this.respondedToInbound) {
+                this.inboundStream.respond({ ':status': 502 });
+            }
+            this.inboundStream.end();
+        } catch (e) {}
+    }
+}
+
+function pairsFromRawTrailers(rawTrailers: string[] | undefined): [string, string][] {
+    if (!rawTrailers) return [];
+    const pairs: [string, string][] = [];
+    for (let i = 0; i < rawTrailers.length; i += 2) {
+        pairs.push([rawTrailers[i]!, rawTrailers[i + 1]!]);
+    }
+    return pairs;
 }
 
 function getNextLine(rl: readline.Interface): Promise<string> {

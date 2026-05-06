@@ -1,5 +1,7 @@
 import * as httpolyglot from '@httptoolkit/httpolyglot';
 import * as http from 'http';
+import * as http2 from 'http2';
+import * as net from 'net';
 
 import { DestroyableServer, makeDestroyable } from 'destroyable-server';
 
@@ -29,6 +31,12 @@ export class PublicEndpointServer {
             unknownProtocol: undefined,
             tls: undefined
         }, this.handleRequest.bind(this)));
+
+        // We subscribe to 'request' (HTTP/1), 'upgrade' (HTTP/1 Upgrade) and 'stream'
+        // (HTTP/2). Registering 'stream' suppresses 'request' for HTTP/2 streams, so
+        // each request lands in exactly one handler.
+        this.server.on('upgrade', this.handleUpgrade.bind(this));
+        this.server.on('stream', this.handleH2Stream.bind(this));
     }
 
     public async start() {
@@ -51,6 +59,13 @@ export class PublicEndpointServer {
         await Promise.race([closed, grace]);
     }
 
+    private resolveAdminSession(hostHeader: string) {
+        const [hostname] = hostHeader.split(':');
+        if (!hostname || !hostname.endsWith(this.rootDomain)) return undefined;
+        const subdomain = hostname.slice(0, hostname.length - this.rootDomain.length).replace(/\.$/, '');
+        return this.adminServer.getSession(subdomain);
+    }
+
     private handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
         const hostHeader = req.headers[':authority'] as string | undefined ||
             req.headers['host'] ||
@@ -58,7 +73,7 @@ export class PublicEndpointServer {
         const [hostname] = hostHeader.split(':');
         console.log(`Received public endpoint request for host: ${hostHeader}, url: ${req.url}`);
 
-        if (!hostname.endsWith(this.rootDomain)) {
+        if (!hostname || !hostname.endsWith(this.rootDomain)) {
             console.log(`Rejected request for invalid public endpoint: ${hostname}`);
             res.writeHead(404);
             res.end();
@@ -82,18 +97,63 @@ export class PublicEndpointServer {
             return;
         }
 
-        const subdomain = hostname.slice(0, hostname.length - this.rootDomain.length).replace(/\.$/, '');
-        const adminSession = this.adminServer.getSession(subdomain);
-
+        const adminSession = this.resolveAdminSession(hostHeader);
         if (!adminSession) {
-            console.log(`No admin session for unknown public endpoint: ${subdomain}`);
+            console.log(`No admin session for unknown public endpoint host: ${hostHeader}`);
             res.writeHead(404);
             res.end();
             return;
         }
 
-        console.log(`Connecting request for public endpoint ${subdomain} to admin session`);
+        console.log(`Connecting request for public endpoint ${hostname} to admin session`);
         adminSession.startRequest(req, res);
+    }
+
+    private handleH2Stream(stream: http2.ServerHttp2Stream, headers: http2.IncomingHttpHeaders) {
+        const authority = (headers[':authority'] as string | undefined) ?? '';
+        const path = (headers[':path'] as string | undefined) ?? '';
+        const method = headers[':method'] as string | undefined;
+        console.log(`Received public endpoint H2 stream for authority: ${authority}, path: ${path}`);
+
+        if (method === 'CONNECT') {
+            stream.respond({ ':status': 405 });
+            stream.end();
+            return;
+        }
+        if (!path.startsWith('/')) {
+            stream.respond({ ':status': 400 });
+            stream.end();
+            return;
+        }
+
+        const adminSession = this.resolveAdminSession(authority);
+        if (!adminSession) {
+            console.log(`No admin session for unknown public endpoint H2 host: ${authority}`);
+            stream.respond({ ':status': 404 });
+            stream.end();
+            return;
+        }
+
+        adminSession.startH2Stream(stream, headers);
+    }
+
+    private handleUpgrade(req: http.IncomingMessage, socket: net.Socket, head: Buffer) {
+        const hostHeader = req.headers['host'] || '';
+        console.log(`Received public endpoint upgrade for host: ${hostHeader}, url: ${req.url}`);
+
+        if (!req.url || !req.url.startsWith('/')) {
+            socket.destroy();
+            return;
+        }
+
+        const adminSession = this.resolveAdminSession(hostHeader);
+        if (!adminSession) {
+            console.log(`No admin session for unknown public endpoint upgrade: ${hostHeader}`);
+            socket.destroy();
+            return;
+        }
+
+        adminSession.startUpgrade(req, socket, head);
     }
 
 }
