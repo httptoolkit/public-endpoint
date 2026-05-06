@@ -403,6 +403,19 @@ class RequestSession {
         };
 
         tunnelledReq.on('error', handleTunnelError);
+
+        // Forward 1xx informationals (e.g. 103 Early Hints)
+        tunnelledReq.on('information', (info) => {
+            if (this.res.headersSent || this.res.writableEnded) return;
+            const lines = [`HTTP/1.1 ${info.statusCode} ${info.statusMessage}`];
+            for (let i = 0; i < info.rawHeaders.length; i += 2) {
+                lines.push(`${info.rawHeaders[i]}: ${info.rawHeaders[i + 1]}`);
+            }
+            try {
+                (this.res as any)._writeRaw(lines.join('\r\n') + '\r\n\r\n', 'ascii');
+            } catch (e) {}
+        });
+
         tunnelledReq.flushHeaders();
 
         // Forward request body and trailers without auto-ending — we need to attach
@@ -652,6 +665,12 @@ class H2RequestSession {
             } else {
                 backendReq.end();
             }
+        });
+
+        // Forward 1xx informational header frames
+        backendReq.on('headers', (infoHeaders) => {
+            if (this.respondedToInbound) return;
+            try { this.inboundStream.additionalHeaders(infoHeaders); } catch (e) {}
         });
 
         // Pipe the backend response back to the inbound stream.

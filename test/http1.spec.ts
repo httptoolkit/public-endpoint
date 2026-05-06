@@ -284,6 +284,58 @@ describe("HTTP/1 tunneled requests", () => {
 
     });
 
+    describe("informational responses", () => {
+
+        it("forwards 1xx informational responses ahead of the final response", async () => {
+            const tunnel = await startTunnelClient();
+            await tunnel.mockServer.forGet('/')
+                .sendInfoResponse(103, { 'Link': '</style.css>; rel=preload' })
+                .thenReply(200, 'final-body');
+
+            const data = await rawPublicRequest(
+                `GET / HTTP/1.1\r\n` +
+                `Host: ${publicHostHeader(tunnel.endpointId)}\r\n` +
+                `Connection: close\r\n\r\n`
+            );
+
+            const text = data.toString();
+            const earlyIdx = text.indexOf('103');
+            const finalIdx = text.indexOf('200');
+            expect(earlyIdx).to.be.greaterThan(-1);
+            expect(finalIdx).to.be.greaterThan(earlyIdx);
+            expect(text).to.match(/Link:\s*<\/style\.css>;\s*rel=preload/i);
+            expect(text).to.match(/final-body/);
+
+            await tunnel.close();
+        });
+
+        it("forwards multiple 1xx informationals in order", async () => {
+            const tunnel = await startTunnelClient();
+            await tunnel.mockServer.forGet('/')
+                .sendInfoResponse(103, { 'Link': '</a.css>; rel=preload' })
+                .sendInfoResponse(103, { 'Link': '</b.css>; rel=preload' })
+                .thenReply(200, 'final-body');
+
+            const data = await rawPublicRequest(
+                `GET / HTTP/1.1\r\n` +
+                `Host: ${publicHostHeader(tunnel.endpointId)}\r\n` +
+                `Connection: close\r\n\r\n`
+            );
+
+            const text = data.toString();
+            const firstHint = text.indexOf('a.css');
+            const secondHint = text.indexOf('b.css');
+            const finalIdx = text.indexOf('200');
+            expect(firstHint).to.be.greaterThan(-1);
+            expect(secondHint).to.be.greaterThan(firstHint);
+            expect(finalIdx).to.be.greaterThan(secondHint);
+            expect(text).to.match(/final-body/);
+
+            await tunnel.close();
+        });
+
+    });
+
     describe("tunnel teardown", () => {
 
         it("returns 502 when the backend tears down its end of the stream", async () => {

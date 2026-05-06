@@ -49,6 +49,81 @@ describe("HTTP/2 tunneled requests", () => {
         await tunnel.close();
     });
 
+    it("forwards 1xx informational responses ahead of the final response", async () => {
+        const tunnel = await startTunnelClient();
+        await tunnel.mockServer.forGet('/')
+            .sendInfoResponse(103, { 'link': '</style.css>; rel=preload' })
+            .thenReply(200, 'h2-final');
+
+        const publicH2 = http2.connect(`http://${tunnel.endpointId}.${ROOT_DOMAIN}:${PUBLIC_PORT}`);
+        const req = publicH2.request({
+            ':method': 'GET',
+            ':path': '/',
+            ':scheme': 'http',
+            ':authority': publicHostHeader(tunnel.endpointId)
+        });
+        req.end();
+
+        const informational: Array<{ status: number; headers: http2.IncomingHttpHeaders }> = [];
+        req.on('headers', (h) => {
+            informational.push({ status: h[':status'] as number, headers: h });
+        });
+
+        const [respHeaders] = await once(req, 'response') as [http2.IncomingHttpHeaders & http2.IncomingHttpStatusHeader];
+        expect(respHeaders[':status']).to.equal(200);
+
+        const body = await new Promise<string>((resolve) => {
+            let s = '';
+            req.setEncoding('utf8');
+            req.on('data', (c) => { s += c; });
+            req.on('end', () => resolve(s));
+        });
+        expect(body).to.equal('h2-final');
+
+        // Exactly one 1xx, with the preload Link, before the final response.
+        expect(informational).to.have.length(1);
+        expect(informational[0]!.status).to.equal(103);
+        expect(informational[0]!.headers['link']).to.equal('</style.css>; rel=preload');
+
+        publicH2.close();
+        await tunnel.close();
+    });
+
+    it("forwards multiple 1xx informationals in order", async () => {
+        const tunnel = await startTunnelClient();
+        await tunnel.mockServer.forGet('/')
+            .sendInfoResponse(103, { 'link': '</a.css>; rel=preload' })
+            .sendInfoResponse(103, { 'link': '</b.css>; rel=preload' })
+            .thenReply(200, 'h2-final');
+
+        const publicH2 = http2.connect(`http://${tunnel.endpointId}.${ROOT_DOMAIN}:${PUBLIC_PORT}`);
+        const req = publicH2.request({
+            ':method': 'GET',
+            ':path': '/',
+            ':scheme': 'http',
+            ':authority': publicHostHeader(tunnel.endpointId)
+        });
+        req.end();
+
+        const informational: Array<{ status: number; link?: string | string[] }> = [];
+        req.on('headers', (h) => {
+            informational.push({ status: h[':status'] as number, link: h['link'] });
+        });
+
+        const [respHeaders] = await once(req, 'response') as [http2.IncomingHttpHeaders & http2.IncomingHttpStatusHeader];
+        expect(respHeaders[':status']).to.equal(200);
+        await new Promise<void>((resolve) => { req.resume(); req.on('end', () => resolve()); });
+
+        expect(informational).to.have.length(2);
+        expect(informational[0]!.status).to.equal(103);
+        expect(informational[0]!.link).to.equal('</a.css>; rel=preload');
+        expect(informational[1]!.status).to.equal(103);
+        expect(informational[1]!.link).to.equal('</b.css>; rel=preload');
+
+        publicH2.close();
+        await tunnel.close();
+    });
+
     it("routes streams on a coalesced H2 connection to different tunnels by :authority", async () => {
         // Browsers reuse a single TLS/H2 connection across subdomains covered
         // by a wildcard cert (RFC 7540 §9.1.1). Each stream's :authority must
